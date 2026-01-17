@@ -308,7 +308,7 @@ echo "→ Setze einfache Rechte für $CONFIG_DIR"
 chmod 775 "$CONFIG_DIR"
 
 # Alle Dateien im Ordner: owner+group rw, andere r
-chmod 664 "$CONFIG_DIR"/* 2>/dev/null || true
+chmod 775 "$CONFIG_DIR"/* 2>/dev/null || true
 
 echo "→ systemd neu einlesen & Service aktivieren"
 systemctl daemon-reload
