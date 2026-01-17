@@ -310,9 +310,8 @@ chmod 775 "$CONFIG_DIR"
 # Alle Dateien im Ordner: owner+group rw, andere r
 chmod 775 "$CONFIG_DIR"/* 2>/dev/null || true
 
-echo "→ systemd neu einlesen & Service aktivieren"
-systemctl daemon-reload
-systemctl enable docker-boot-start.service
+echo "→ Setze universelle Schreibrechte für $CONFIG_DIR"
+chmod -R a+rwX "$CONFIG_DIR"
 
 
 echo
