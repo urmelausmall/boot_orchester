@@ -16,6 +16,23 @@ if [ "${EUID:-$(id -u)}" -ne 0 ]; then
   exit 1
 fi
 
+echo
+echo "⚠️  WICHTIGER HINWEIS ⚠️"
+echo "------------------------------------------------------------"
+echo "Dieses Docker-Boot-Orchestrator-Skript macht NUR Sinn,"
+echo "wenn ALLE Docker-Container / Stacks mit"
+echo
+echo "    restart: \"no\""
+echo
+echo "konfiguriert sind."
+echo
+echo "Docker startet Container mit restart=always / unless-stopped"
+echo "selbstständig beim Boot – VOR diesem Orchestrator."
+echo
+echo "➡️ In diesem Fall ist die Startreihenfolge wirkungslos."
+echo "------------------------------------------------------------"
+echo
+
 echo "→ Erstelle Config-Verzeichnis: $CONFIG_DIR"
 mkdir -p "$CONFIG_DIR"
 
@@ -133,6 +150,13 @@ wait_for_container() {
   return 1
 }
 
+declare -A restart_violations=()
+
+get_restart_policy() {
+  local c="$1"
+  $DOCKER_BIN inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$c" 2>/dev/null || echo "unknown"
+}
+
 # ─── Dependencies einlesen ────────────────────────────────────────────────────
 declare -A deps=()
 
@@ -185,6 +209,20 @@ log ""
 # ─── Start-Funktion mit Dependencies ─────────────────────────────────────────
 start_with_deps() {
   local c="$1"
+
+  local policy
+  policy="$(get_restart_policy "$c")"
+
+  if $DOCKER_BIN inspect "$c" >/dev/null 2>&1; then
+    policy="$(get_restart_policy "$c")"
+    if [ "$policy" != "no" ] && [ "$policy" != "unknown" ]; then
+      restart_violations["$c"]="$policy"
+    fi
+  else
+    log "⚠️  Container '$c' existiert nicht (Tippfehler?) – überspringe"
+    log ""
+    return 0
+  fi
 
   if is_disabled "$c"; then
     log "⏭️  $c ist disabled – wird übersprungen"
@@ -247,6 +285,18 @@ for c in "${all_names[@]}"; do
   [[ " ${priority_containers[*]} " =~ " $c " ]] && continue
   start_with_deps "$c"
 done
+
+if [ ${#restart_violations[@]} -gt 0 ]; then
+  log ""
+  log "⚠️  Container mit aktiver Restart-Policy erkannt!"
+  log "    Diese Container können die Boot-Reihenfolge stören:"
+  for c in "${!restart_violations[@]}"; do
+    log "    - $c (restart: ${restart_violations[$c]})"
+  done
+else
+  log ""
+  log "✅ Alle Container verwenden restart: no"
+fi
 
 # ─── Abschluss ───────────────────────────────────────────────────────────────
 log "✅ Alle Container gestartet"
@@ -359,6 +409,11 @@ echo "→ systemd neu einlesen & Service aktivieren"
 systemctl daemon-reload
 systemctl enable docker-boot-start.service
 
+echo
+echo "Hinweis:"
+echo "→ Prüfe deine Docker-Compose Dateien:"
+echo "   Alle Container sollten 'restart: \"no\"' verwenden."
+echo
 echo
 echo "=== Fertig! ==="
 echo "• Skript:   $INSTALL_SCRIPT_PATH"
