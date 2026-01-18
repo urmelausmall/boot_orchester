@@ -326,9 +326,7 @@ echo "→ Lege Template dependencies.txt an (falls nicht vorhanden)"
 
 if [ ! -f "$CONFIG_DIR/dependencies.txt" ]; then
   cat > "$CONFIG_DIR/dependencies.txt" <<'EOF'
-homeassistant depends on berry-mariadb
-npmplus depends on berry-mariadb & crowdsec & openappsec-agent
-ntopng depends on ntopng-redis-1
+npmplus depends on mariadb & crowdsec
 EOF
 else
   echo "  • $CONFIG_DIR/dependencies.txt existiert bereits – nicht überschrieben."
@@ -376,7 +374,6 @@ if [ ! -f "$DISABLE_FILE" ]; then
 
 # Beispiel:
 # watchtower
-# old-test-container
 EOF
 else
   echo "  • $DISABLE_FILE existiert bereits – nicht überschrieben."
