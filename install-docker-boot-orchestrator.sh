@@ -7,6 +7,7 @@ SERVICE_PATH="/etc/systemd/system/docker-boot-start.service"
 CONFIG_DIR="/docker/boot_order"
 CONFIG_FILE="$CONFIG_DIR/docker-boot-config.env"
 DISABLE_FILE="$CONFIG_DIR/disable_boot.txt"
+IGNORE_FILE="$CONFIG_DIR/ignore.txt"
 
 echo "=== Docker Boot Orchestrator Installer ==="
 
@@ -50,6 +51,7 @@ DEPENDENCY_FILE="$BASE_DIR/dependencies.txt"
 PRIORITY_FILE="$BASE_DIR/first_boot_container.txt"
 CONFIG_FILE="$BASE_DIR/docker-boot-config.env"
 DISABLE_FILE="$BASE_DIR/disable_boot.txt"
+IGNORE_FILE="$BASE_DIR/ignore.txt"
 
 # ─── DEFAULT-KONFIG ──────────────────────────────────────────────────────────
 # Diese Defaults können über CONFIG_FILE überschrieben werden.
@@ -106,9 +108,8 @@ if [ -f "$DISABLE_FILE" ]; then
   while IFS= read -r l; do
     [ -z "$l" ] && continue
     case "$l" in \#*) continue ;; esac
-    cname="$(echo "$l" | xargs)"
-    [ -z "$cname" ] && continue
     cname="$(echo "$l" | xargs | tr '[:upper:]' '[:lower:]')"
+    [ -z "$cname" ] && continue
     disabled["$cname"]=1
     log "  - $cname"
   done < "$DISABLE_FILE"
@@ -123,6 +124,30 @@ is_disabled() {
   [[ -n "${disabled[$c]:-}" ]]
 }
 
+# ─── Ignorierte Container ────────────────────────────────────────────────────
+declare -A ignored=()
+
+if [ -f "$IGNORE_FILE" ]; then
+  log "🙈 Ignorierte Container aus $IGNORE_FILE:"
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    case "$l" in \#*) continue ;; esac
+    cname="$(echo "$l" | xargs | tr '[:upper:]' '[:lower:]')"
+    [ -z "$cname" ] && continue
+    ignored["$cname"]=1
+    log "  - $cname"
+  done < "$IGNORE_FILE"
+  log ""
+else
+  log "ℹ️ Keine ignore.txt gefunden (ok)"
+fi
+
+is_ignored() {
+  local c
+  c="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+  [[ -n "${ignored[$c]:-}" ]]
+}
+
 # ─── Timeouts & Delay ────────────────────────────────────────────────────────
 DEP_TIMEOUT=60          # Max Wartezeit auf Dependencies (Sekunden)
 START_TEST_TIMEOUT=30   # Max Wartezeit auf frisch gestarteten Container
@@ -131,7 +156,7 @@ MIN_DELAY=10            # Pause zwischen Container-Starts
 
 DOCKER_BIN="$(command -v docker || echo /usr/bin/docker)"
 
-if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+if ! "$DOCKER_BIN" version >/dev/null 2>&1; then
   log "❌ docker nicht gefunden – breche ab."
   send_gotify_message "$(printf '%b' "$log_messages")"
   exit 1
@@ -169,16 +194,16 @@ if [ -f "$DEPENDENCY_FILE" ]; then
     case "$l" in \#*) continue ;; esac
 
     # Format: name depends on a & b & c
-    name="$(echo "${l%%depends on*}" | xargs)"
+    name="$(echo "${l%%depends on*}" | xargs | tr '[:upper:]' '[:lower:]')"
     rest="${l#*depends on}"
-    rest="$(echo "${rest//&/,}" | xargs)"
+    rest="$(echo "${rest//&/,}" | xargs | tr '[:upper:]' '[:lower:]')"
 
     IFS=',' read -ra arr <<< "$rest"
     deps["$name"]="${arr[*]}"
 
     log "  • $name:"
     for dep in "${arr[@]}"; do
-      dep="$(echo "$dep" | xargs)"
+      dep="$(echo "$dep" | xargs)"   # ist schon lower, nur trimmen
       [ -z "$dep" ] && continue
       log "      - $dep"
     done
@@ -212,8 +237,13 @@ log ""
 start_with_deps() {
   local c="$1"
 
+  if is_ignored "$c"; then
+    log "🙈  $c ist in ignore.txt – wird komplett ignoriert"
+    log ""
+    return 0
+  fi
+
   local policy
-  policy="$(get_restart_policy "$c")"
 
   if $DOCKER_BIN inspect "$c" >/dev/null 2>&1; then
     policy="$(get_restart_policy "$c")"
@@ -234,13 +264,20 @@ start_with_deps() {
 
   log "▶️ Starte $c"
 
-  IFS=' ' read -r -a arr <<< "${deps[$c]:-}"
+  local c_key
+  c_key="$(echo "$c" | tr '[:upper:]' '[:lower:]')"
+  IFS=' ' read -r -a arr <<< "${deps[$c_key]:-}"
   if [ ${#arr[@]} -gt 0 ]; then
     log "  Abhängigkeiten:"
     for dep in "${arr[@]}"; do
       dep="$(echo "$dep" | xargs)"
       [ -z "$dep" ] && continue
       log "    ├─ $dep"
+
+      if is_ignored "$dep"; then
+        log "    │  🙈 $dep ist in ignore.txt – Dependency wird ignoriert"
+        continue
+      fi
 
       if is_disabled "$dep"; then
         log "    │  ⛔ $dep ist disabled – Dependency wird übersprungen"
@@ -285,6 +322,12 @@ log "== 🚀 Starte restliche Container =="
 mapfile -t all_names < <($DOCKER_BIN ps -a --format '{{.Names}}')
 for c in "${all_names[@]}"; do
   [[ " ${priority_containers[*]} " =~ " $c " ]] && continue
+
+  if is_ignored "$c"; then
+    log "🙈  $c ist in ignore.txt – wird komplett ignoriert"
+    continue
+  fi
+
   start_with_deps "$c"
 done
 
@@ -381,6 +424,22 @@ else
   echo "  • $DISABLE_FILE existiert bereits – nicht überschrieben."
 fi
 
+echo "→ Lege Template ignore.txt an (falls nicht vorhanden)"
+
+if [ ! -f "$IGNORE_FILE" ]; then
+  cat > "$IGNORE_FILE" <<'EOF'
+# Container in dieser Liste werden KOMPLETT IGNORIERT.
+# Sie werden nicht gestartet, nicht geprüft und nicht als Dependency verwendet.
+# Ein Container pro Zeile
+# Leere Zeilen und # Kommentare sind erlaubt
+
+# Beispiel:
+# irgendein-debug-container
+EOF
+else
+  echo "  • $IGNORE_FILE existiert bereits – nicht überschrieben."
+fi
+
 echo "→ Erstelle systemd Service: $SERVICE_PATH"
 
 cat > "$SERVICE_PATH" <<'EOF'
@@ -418,6 +477,7 @@ echo "• Configs:  $CONFIG_DIR/first_boot_container.txt"
 echo "            $CONFIG_DIR/dependencies.txt"
 echo "            $CONFIG_FILE"
 echo "            $DISABLE_FILE"
+echo "            $IGNORE_FILE"
 echo
 echo "Optional: jetzt einmalig testen mit:"
 echo "  sudo systemctl start docker-boot-start.service"
