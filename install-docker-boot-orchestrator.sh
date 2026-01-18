@@ -310,14 +310,11 @@ echo "→ Lege Template first_boot_container.txt an (falls nicht vorhanden)"
 if [ ! -f "$CONFIG_DIR/first_boot_container.txt" ]; then
   cat > "$CONFIG_DIR/first_boot_container.txt" <<'EOF'
 # Wichtigste zuerst
-berry-mariadb
-ntopng-redis-1
+mariadb
 portainer_agent
-openappsec-agent
 crowdsec
 npmplus
 Beszel-Agent
-Home-Assistant
 npmplus-geoipupdate
 pi-backup
 EOF
