@@ -108,6 +108,7 @@ if [ -f "$DISABLE_FILE" ]; then
     case "$l" in \#*) continue ;; esac
     cname="$(echo "$l" | xargs)"
     [ -z "$cname" ] && continue
+    cname="$(echo "$l" | xargs | tr '[:upper:]' '[:lower:]')"
     disabled["$cname"]=1
     log "  - $cname"
   done < "$DISABLE_FILE"
@@ -117,7 +118,8 @@ else
 fi
 
 is_disabled() {
-  local c="$1"
+  local c
+  c="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
   [[ -n "${disabled[$c]:-}" ]]
 }
 
