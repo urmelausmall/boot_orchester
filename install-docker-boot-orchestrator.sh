@@ -6,6 +6,7 @@ INSTALL_SCRIPT_PATH="/usr/local/sbin/docker-boot-start.sh"
 SERVICE_PATH="/etc/systemd/system/docker-boot-start.service"
 CONFIG_DIR="/docker/boot_order"
 CONFIG_FILE="$CONFIG_DIR/docker-boot-config.env"
+DISABLE_FILE="$CONFIG_DIR/disable_boot.txt"
 
 echo "=== Docker Boot Orchestrator Installer ==="
 
@@ -31,6 +32,7 @@ BASE_DIR="/docker/boot_order"
 DEPENDENCY_FILE="$BASE_DIR/dependencies.txt"
 PRIORITY_FILE="$BASE_DIR/first_boot_container.txt"
 CONFIG_FILE="$BASE_DIR/docker-boot-config.env"
+DISABLE_FILE="$BASE_DIR/disable_boot.txt"
 
 # ─── DEFAULT-KONFIG ──────────────────────────────────────────────────────────
 # Diese Defaults können über CONFIG_FILE überschrieben werden.
@@ -79,6 +81,29 @@ log() {
   log_messages+="$1\n"
 }
 
+# ─── Disabled-Container ──────────────────────────────────────────────────────
+declare -A disabled=()
+
+if [ -f "$DISABLE_FILE" ]; then
+  log "⛔ Disabled-Container aus $DISABLE_FILE:"
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    case "$l" in \#*) continue ;; esac
+    cname="$(echo "$l" | xargs)"
+    [ -z "$cname" ] && continue
+    disabled["$cname"]=1
+    log "  - $cname"
+  done < "$DISABLE_FILE"
+  log ""
+else
+  log "ℹ️ Keine disable_boot.txt gefunden (ok)"
+fi
+
+is_disabled() {
+  local c="$1"
+  [[ -n "${disabled[$c]:-}" ]]
+}
+
 # ─── Timeouts & Delay ────────────────────────────────────────────────────────
 DEP_TIMEOUT=60          # Max Wartezeit auf Dependencies (Sekunden)
 START_TEST_TIMEOUT=30   # Max Wartezeit auf frisch gestarteten Container
@@ -118,7 +143,6 @@ if [ -f "$DEPENDENCY_FILE" ]; then
     case "$l" in \#*) continue ;; esac
 
     # Format: name depends on a & b & c
-    local name rest
     name="$(echo "${l%%depends on*}" | xargs)"
     rest="${l#*depends on}"
     rest="$(echo "${rest//&/,}" | xargs)"
@@ -151,7 +175,6 @@ log "📋 Boot-Prioritäten aus $PRIORITY_FILE:"
 while IFS= read -r l; do
   [ -z "$l" ] && continue
   case "$l" in \#*) continue ;; esac
-  local cname
   cname="$(echo "$l" | xargs)"
   [ -z "$cname" ] && continue
   priority_containers+=("$cname")
@@ -162,6 +185,13 @@ log ""
 # ─── Start-Funktion mit Dependencies ─────────────────────────────────────────
 start_with_deps() {
   local c="$1"
+
+  if is_disabled "$c"; then
+    log "⏭️  $c ist disabled – wird übersprungen"
+    log ""
+    return 0
+  fi
+
   log "▶️ Starte $c"
 
   IFS=' ' read -r -a arr <<< "${deps[$c]:-}"
@@ -171,6 +201,11 @@ start_with_deps() {
       dep="$(echo "$dep" | xargs)"
       [ -z "$dep" ] && continue
       log "    ├─ $dep"
+
+      if is_disabled "$dep"; then
+        log "    │  ⛔ $dep ist disabled – Dependency wird übersprungen"
+        continue
+      fi
 
       if wait_for_container "$dep" "$DEP_TIMEOUT"; then
         log "    │  ✓ ready"
@@ -279,10 +314,25 @@ GOTIFY_TITLE="Docker-Start-Skript (Pi)"
 GOTIFY_PRIORITY=5
 EOF
 
-  chmod 600 "$CONFIG_FILE"
-  echo "  • $CONFIG_FILE erstellt (chmod 600)."
+  echo "  • $CONFIG_FILE erstellt."
 else
   echo "  • $CONFIG_FILE existiert bereits – nicht überschrieben."
+fi
+
+echo "→ Lege Template disable_boot.txt an (falls nicht vorhanden)"
+
+if [ ! -f "$DISABLE_FILE" ]; then
+  cat > "$DISABLE_FILE" <<'EOF'
+# Container in dieser Liste werden NICHT gestartet
+# Ein Container pro Zeile
+# Leere Zeilen und # Kommentare sind erlaubt
+
+# Beispiel:
+# watchtower
+# old-test-container
+EOF
+else
+  echo "  • $DISABLE_FILE existiert bereits – nicht überschrieben."
 fi
 
 echo "→ Erstelle systemd Service: $SERVICE_PATH"
@@ -302,17 +352,12 @@ TimeoutStartSec=0
 WantedBy=multi-user.target
 EOF
 
-echo "→ Setze einfache Rechte für $CONFIG_DIR"
-
-# Ordner: owner+group rwx, andere rx
-chmod 775 "$CONFIG_DIR"
-
-# Alle Dateien im Ordner: owner+group rw, andere r
-chmod 775 "$CONFIG_DIR"/* 2>/dev/null || true
-
 echo "→ Setze universelle Schreibrechte für $CONFIG_DIR"
-chmod -R a+rwX "$CONFIG_DIR"
+chmod -R a+rwX "$CONFIG_DIR" || true
 
+echo "→ systemd neu einlesen & Service aktivieren"
+systemctl daemon-reload
+systemctl enable docker-boot-start.service
 
 echo
 echo "=== Fertig! ==="
@@ -321,6 +366,7 @@ echo "• Service:  docker-boot-start.service (beim Boot aktiv)"
 echo "• Configs:  $CONFIG_DIR/first_boot_container.txt"
 echo "            $CONFIG_DIR/dependencies.txt"
 echo "            $CONFIG_FILE"
+echo "            $DISABLE_FILE"
 echo
 echo "Optional: jetzt einmalig testen mit:"
 echo "  sudo systemctl start docker-boot-start.service"
